@@ -1,0 +1,9 @@
+terraform {
+  backend "s3" {
+    bucket         = "REPLACE-with-your-state-bucket"
+    key            = "mern-devops/terraform.tfstate"
+    region         = "eu-central-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}

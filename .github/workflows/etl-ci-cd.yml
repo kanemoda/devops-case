@@ -1,0 +1,91 @@
+name: ETL CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "python-project/**"
+      - ".github/workflows/etl-ci-cd.yml"
+  pull_request:
+    paths:
+      - "python-project/**"
+      - ".github/workflows/etl-ci-cd.yml"
+
+concurrency:
+  group: etl-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r python-project/requirements.txt
+          pip install flake8
+      - name: Lint
+        run: flake8 python-project/ETL.py --max-line-length=100
+      - name: Compile check
+        run: python -m py_compile python-project/ETL.py
+
+  image:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/etl
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=,format=long
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: python-project
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: image
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "${{ secrets.AWS_REGION }}"
+      - name: Deploy CronJob
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          kubectl apply -k python-project/k8s
+          kubectl -n etl set image cronjob/etl etl="${REGISTRY}/${repo}/etl:${GITHUB_SHA}"

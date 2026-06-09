@@ -1,0 +1,28 @@
+# Node
+node_modules/
+build/
+npm-debug.log*
+yarn-error.log*
+
+# Cypress run artifacts
+cypress/screenshots/
+cypress/videos/
+
+# Python
+__pycache__/
+*.pyc
+python-project/data/
+
+# Terraform
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+terraform/terraform.tfvars
+crash.log
+
+# Environment / local overrides
+.env
+*.local
+
+# OS / editor
+.DS_Store

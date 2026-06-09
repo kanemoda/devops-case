@@ -1,0 +1,48 @@
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-example}
+      MONGO_INITDB_DATABASE: sample_training
+    volumes:
+      - mongo-data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [mern]
+
+  backend:
+    build: ./server
+    image: mern-server:local
+    restart: unless-stopped
+    environment:
+      PORT: 5050
+      DB_NAME: sample_training
+      ATLAS_URI: mongodb://${MONGO_USERNAME:-root}:${MONGO_PASSWORD:-example}@mongodb:27017/sample_training?authSource=admin
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks: [mern]
+
+  frontend:
+    build: ./client
+    image: mern-client:local
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    depends_on:
+      - backend
+    networks: [mern]
+
+volumes:
+  mongo-data:
+
+networks:
+  mern:
+    driver: bridge

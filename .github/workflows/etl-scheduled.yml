@@ -1,0 +1,32 @@
+name: ETL Scheduled Run
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: etl-scheduled
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r python-project/requirements.txt
+      - name: Run ETL
+        working-directory: python-project
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/etl
+        run: python ETL.py
+      - name: Upload output
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-output
+          path: ${{ runner.temp }}/etl/github.json
+          retention-days: 7

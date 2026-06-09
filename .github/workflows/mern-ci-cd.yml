@@ -1,0 +1,133 @@
+name: MERN CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mern-project/**"
+      - ".github/workflows/mern-ci-cd.yml"
+  pull_request:
+    paths:
+      - "mern-project/**"
+      - ".github/workflows/mern-ci-cd.yml"
+
+concurrency:
+  group: mern-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            mern-project/client/package-lock.json
+            mern-project/server/package-lock.json
+      - name: Install and build client
+        working-directory: mern-project/client
+        env:
+          CYPRESS_INSTALL_BINARY: "0"
+        run: |
+          npm ci
+          npm run build
+      - name: Install server
+        working-directory: mern-project/server
+        run: npm ci
+      - name: Server syntax check
+        working-directory: mern-project/server
+        run: node --check server.mjs
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        working-directory: mern-project
+        run: docker compose up -d --build
+      - name: Wait for app
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/healthcheck/ >/dev/null && exit 0
+            sleep 2
+          done
+          echo "app did not become healthy" >&2
+          exit 1
+      - name: Run Cypress E2E
+        working-directory: mern-project/client
+        run: docker run --rm --network host -v "$PWD:/e2e" -w /e2e cypress/included:4.12.1 --config video=false
+      - name: Stack logs on failure
+        if: failure()
+        working-directory: mern-project
+        run: docker compose logs
+      - name: Tear down
+        if: always()
+        working-directory: mern-project
+        run: docker compose down -v
+
+  images:
+    needs: [build-test, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        component: [client, server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/mern-${{ matrix.component }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=,format=long
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: mern-project/${{ matrix.component }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: images
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "${{ secrets.AWS_REGION }}"
+      - name: Deploy to cluster
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          kubectl apply -k mern-project/k8s
+          kubectl -n mern set image deployment/backend backend="${REGISTRY}/${repo}/mern-server:${GITHUB_SHA}"
+          kubectl -n mern set image deployment/frontend frontend="${REGISTRY}/${repo}/mern-client:${GITHUB_SHA}"
+          kubectl -n mern rollout status deployment/backend --timeout=180s
+          kubectl -n mern rollout status deployment/frontend --timeout=180s
