@@ -1,5 +1,7 @@
 # DevOps Case — MERN Stack & Python ETL
 
+**Repository:** https://github.com/kanemoda/devops-case
+
 This repository contains two deployable workloads and all the infrastructure,
 orchestration, CI/CD and observability needed to run them:
 
